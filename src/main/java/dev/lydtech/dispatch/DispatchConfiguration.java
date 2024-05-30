@@ -29,10 +29,12 @@ public class DispatchConfiguration {
     private static final String TRUSTED_PACKAGES = "dev.lydtech.dispatch.message";
 
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(ConsumerFactory<String, Object> consumerFactory,
-                                                                                                 DefaultErrorHandler errorHandler) {
+    public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(ConsumerFactory<String, Object> consumerFactory) {
         ConcurrentKafkaListenerContainerFactory<String, Object> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(new FixedBackOff(100L, 3L));
+        errorHandler.addRetryableExceptions(RetryableException.class);
+        errorHandler.addNotRetryableExceptions(NotRetryableException.class);
         factory.setCommonErrorHandler(errorHandler);
         return factory;
     }
@@ -47,14 +49,6 @@ public class DispatchConfiguration {
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class); // for now message key
         config.put(JsonDeserializer.TRUSTED_PACKAGES, TRUSTED_PACKAGES);
         return new DefaultKafkaConsumerFactory<>(config);
-    }
-
-    @Bean
-    public DefaultErrorHandler errorHandler() {
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(new FixedBackOff(100L, 3L));
-        errorHandler.addNotRetryableExceptions(RetryableException.class);
-        errorHandler.addNotRetryableExceptions(NotRetryableException.class);
-        return errorHandler;
     }
 
     @Bean
