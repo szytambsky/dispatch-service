@@ -51,6 +51,8 @@ public class DispatchOrderIntegrationTest {
     private final static String ORDER_DISPATCHED_TOPIC = "order.dispatched";
     private final static String DISPATCH_TRACKING_TOPIC = "dispatch.tracking";
 
+    private final static String ORDER_CREATED_DLT_TOPIC = "order.created.DLT";
+
     @Autowired
     private KafkaTemplate kafkaTemplate;
     @Autowired
@@ -70,12 +72,13 @@ public class DispatchOrderIntegrationTest {
 
     @KafkaListener(
             groupId = "KafkaIntegrationTest",
-            topics = {DISPATCH_TRACKING_TOPIC, ORDER_DISPATCHED_TOPIC}
+            topics = {DISPATCH_TRACKING_TOPIC, ORDER_DISPATCHED_TOPIC, ORDER_CREATED_DLT_TOPIC}
     )
     public static class KafkaTestListener {
         AtomicInteger dispatchPreparingCounter = new AtomicInteger(0);
         AtomicInteger dispatchCompletedCounter = new AtomicInteger(0);
         AtomicInteger orderDispatchedCounter = new AtomicInteger(0);
+        AtomicInteger orderCreatedDLTCounter = new AtomicInteger(0);
 
         @KafkaHandler
         void receiveDispatchPreparing(@Header(KafkaHeaders.RECEIVED_KEY) String key, @Payload DispatchPreparing payload) {
@@ -100,6 +103,14 @@ public class DispatchOrderIntegrationTest {
             assertThat(payload, notNullValue());
             orderDispatchedCounter.incrementAndGet();
         }
+
+        @KafkaHandler
+        void receiveOrderCreatedDLT(@Header(KafkaHeaders.RECEIVED_KEY) String key, @Payload OrderCreated payload) {
+            log.debug("Received OrderCreated DLT: key " + key + " - payload: " + payload);
+            assertThat(key, notNullValue());
+            assertThat(payload, notNullValue());
+            orderCreatedDLTCounter.incrementAndGet();
+        }
     }
 
     @BeforeEach
@@ -107,6 +118,7 @@ public class DispatchOrderIntegrationTest {
         kafkaTestListener.orderDispatchedCounter.set(0);
         kafkaTestListener.dispatchPreparingCounter.set(0);
         kafkaTestListener.dispatchCompletedCounter.set(0);
+        kafkaTestListener.orderCreatedDLTCounter.set(0);
         WiremockUtils.reset();
 
         registry.getListenerContainers().stream()
@@ -129,6 +141,7 @@ public class DispatchOrderIntegrationTest {
                 .until(() -> kafkaTestListener.dispatchCompletedCounter.get(), equalTo(1));
         await().atMost(1, TimeUnit.SECONDS).pollDelay(100, TimeUnit.MILLISECONDS)
                 .until(() -> kafkaTestListener.orderDispatchedCounter.get(), equalTo(1));
+        assertThat(kafkaTestListener.orderCreatedDLTCounter.get(), equalTo(0));
     }
 
     @Test
@@ -139,7 +152,8 @@ public class DispatchOrderIntegrationTest {
         String key = UUID.randomUUID().toString();
         sendMessage(ORDER_CREATED_TOPIC, key, orderCreated);
 
-        TimeUnit.SECONDS.sleep(3);
+        await().atMost(3, TimeUnit.SECONDS).pollDelay(100, TimeUnit.MILLISECONDS)
+                .until(() -> kafkaTestListener.orderCreatedDLTCounter.get(), equalTo(1));
         assertThat(kafkaTestListener.dispatchPreparingCounter.get(), equalTo(0));
         assertThat(kafkaTestListener.orderDispatchedCounter.get(), equalTo(0));
         assertThat(kafkaTestListener.dispatchCompletedCounter.get(), equalTo(0));
@@ -160,6 +174,22 @@ public class DispatchOrderIntegrationTest {
                 .until(() -> kafkaTestListener.dispatchCompletedCounter.get(), equalTo(1));
         await().atMost(1, TimeUnit.SECONDS).pollDelay(100, TimeUnit.MILLISECONDS)
                 .until(() -> kafkaTestListener.orderDispatchedCounter.get(), equalTo(1));
+        assertThat(kafkaTestListener.orderCreatedDLTCounter.get(), equalTo(0));
+    }
+
+    @Test
+    public void testOrderCreatedFlow_RetryUntilFailure() throws Exception {
+        stubWiremock("/api/stock?item=my-item", 503, "Service unavailable");
+
+        OrderCreated orderCreated = TestEventData.buildOrderCreatedEvent(randomUUID(), "my-item");
+        String key = UUID.randomUUID().toString();
+        sendMessage(ORDER_CREATED_TOPIC, key, orderCreated);
+
+        await().atMost(5, TimeUnit.SECONDS).pollDelay(100, TimeUnit.MILLISECONDS)
+                .until(() -> kafkaTestListener.orderCreatedDLTCounter.get(), equalTo(1));
+        assertThat(kafkaTestListener.dispatchPreparingCounter.get(), equalTo(0));
+        assertThat(kafkaTestListener.orderDispatchedCounter.get(), equalTo(0));
+        assertThat(kafkaTestListener.dispatchCompletedCounter.get(), equalTo(0));
     }
 
     private void sendMessage(String topic, String key, Object data) throws Exception {
